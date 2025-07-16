@@ -1,0 +1,258 @@
+package main
+
+import (
+	"bufio"
+	// "encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+type Message struct {
+	Username string `json:"username"`
+	Content  string `json:"content"`
+	Type     string `json:"type"`
+}
+
+func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("WebSocket upgrade error:", err)
+		return
+	}
+	fmt.Println("WebSocket connection established")
+
+	// Get username from query parameter
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		username = "Anonymous"
+	}
+
+	fmt.Println("Username parsed:", username)
+
+	client := &Client{
+		conn:     conn,
+		username: username,
+		send:     make(chan Message, 256),
+	}
+
+	// something here doesnt go through after 1 connection
+
+	hub.register <- client
+
+	fmt.Println("New client connected:", username)
+	// Start goroutines for reading and writing
+	go client.writePump()
+	go client.readPump(hub)
+}
+
+func (c *Client) readPump(hub *Hub) {
+	defer func() {
+		hub.unregister <- c
+		c.conn.Close()
+	}()
+
+	for {
+		var msg Message
+		err := c.conn.ReadJSON(&msg)
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("WebSocket error: %v", err)
+			}
+			break
+		}
+
+		// Set the username from the client
+		msg.Username = c.username
+		msg.Type = "message"
+
+		hub.broadcast <- msg
+	}
+}
+
+func (c *Client) writePump() {
+	defer c.conn.Close()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			if err := c.conn.WriteJSON(message); err != nil {
+				log.Println("WebSocket write error:", err)
+				return
+			}
+		}
+	}
+}
+
+func main() {
+
+	reader := bufio.NewReader(os.Stdin)
+
+	servOrClient, _ := reader.ReadString('\n')
+	servOrClient = strings.TrimSpace(servOrClient)
+
+	if servOrClient == "s" {
+		// if setup server
+		hub := newHub()
+		go hub.run()
+
+		http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+			handleWebSocket(hub, w, r)
+		})
+
+		// Get and display server information
+		fmt.Println("=== WebSocket Chat Server ===")
+		fmt.Println("Server starting on port 8080")
+		fmt.Println("Share this information with clients:")
+		fmt.Println("- If connecting locally: ws://localhost:8080/ws")
+		fmt.Println("- If connecting remotely: ws://YOUR_PUBLIC_IP:8080/ws")
+		fmt.Println("=============================")
+
+		log.Fatal(http.ListenAndServe(":8080", nil))
+	}
+
+	// Get server address from user
+	fmt.Print("Enter server address (e.g., localhost:8080 or 192.168.1.100:8080): ")
+	serverAddr, _ := reader.ReadString('\n')
+	serverAddr = strings.TrimSpace(serverAddr)
+
+	if serverAddr == "" {
+		serverAddr = "localhost:8080"
+	}
+
+	fmt.Print("Enter your username: ")
+	username, _ := reader.ReadString('\n')
+	username = strings.TrimSpace(username)
+
+	if username == "" {
+		username = "Anonymous"
+	}
+
+	// Create WebSocket URL
+	u := url.URL{
+		Scheme:   "ws",
+		Host:     serverAddr,
+		Path:     "/ws",
+		RawQuery: "username=" + url.QueryEscape(username),
+	}
+
+	fmt.Printf("Connecting to %s as %s...\n", u.String(), username)
+
+	// Connect to WebSocket server
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		log.Fatal("Failed to connect:", err)
+	}
+	defer conn.Close()
+
+	fmt.Println("Connected! Type messages and press Enter to send.")
+	fmt.Println("Type 'quit' to exit, '/users' to see online users.")
+	fmt.Println("========================================")
+
+	// Channel to handle interrupt signal
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
+	// Channel for sending messages
+	sendChan := make(chan string)
+
+	// Goroutine to handle incoming messages
+	go func() {
+		for {
+			var msg Message
+			err := conn.ReadJSON(&msg)
+			if err != nil {
+				log.Println("Read error:", err)
+				return
+			}
+
+			// Format and display the message based on type
+			timestamp := time.Now().Format("15:04:05")
+			switch msg.Type {
+			case "message":
+				fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
+			case "join":
+				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+			case "leave":
+				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+			}
+		}
+	}()
+
+	// Goroutine to handle user input
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			text := strings.TrimSpace(scanner.Text())
+			if text == "quit" {
+				interrupt <- os.Interrupt
+				return
+			}
+			if text != "" {
+				sendChan <- text
+			}
+		}
+	}()
+
+	// Main loop
+	for {
+		select {
+		case message := <-sendChan:
+			// Handle special commands
+			if strings.HasPrefix(message, "/") {
+				switch message {
+				case "/users":
+					fmt.Println("*** Command not implemented yet ***")
+					continue
+				case "/help":
+					fmt.Println("*** Available commands: /users, /help, quit ***")
+					continue
+				default:
+					fmt.Println("*** Unknown command. Type /help for available commands ***")
+					continue
+				}
+			}
+
+			msg := Message{
+				Username: username,
+				Content:  message,
+				Type:     "message",
+			}
+
+			err := conn.WriteJSON(msg)
+			if err != nil {
+				log.Println("Write error:", err)
+				return
+			}
+			// fmt.Printf("[%s] You: %s\n", time.Now().Format("15:04:05"), message)
+
+		case <-interrupt:
+			fmt.Println("\nDisconnecting...")
+
+			// Send close message
+			err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err != nil {
+				log.Println("Write close error:", err)
+				return
+			}
+
+			// Wait for server to close connection
+			select {
+			case <-time.After(time.Second):
+			}
+			return
+		}
+	}
+}
