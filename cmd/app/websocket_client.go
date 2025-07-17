@@ -250,7 +250,7 @@ func main() {
 
 			// Wait for server to close connection
 			select {
-			case <-time.After(time.Second):
+				case <-time.After(time.Second):
 			}
 			return
 		}
