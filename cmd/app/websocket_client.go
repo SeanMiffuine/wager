@@ -116,13 +116,11 @@ func main() {
 
 		// Get and display server information
 		fmt.Println("=== WebSocket Chat Server ===")
-		fmt.Println("Server starting on port 8080")
 		fmt.Println("Share this information with clients:")
-		fmt.Println("- If connecting locally: ws://localhost:8080/ws")
-		fmt.Println("- If connecting remotely: ws://YOUR_PUBLIC_IP:8080/ws")
+		fmt.Println("Serving on Render's PORT env variable")
 		fmt.Println("=============================")
 
-		log.Fatal(http.ListenAndServe(":8080", nil))
+		log.Fatal(http.ListenAndServe(os.Getenv("PORT"), nil))
 
 		// ends here
 	}
