@@ -120,7 +120,12 @@ func main() {
 		fmt.Println("Serving on Render's PORT env variable")
 		fmt.Println("=============================")
 
-		log.Fatal(http.ListenAndServe(os.Getenv("PORT"), nil))
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+
+		log.Fatal(http.ListenAndServe(":"+port, nil))
 
 		// ends here
 	}
