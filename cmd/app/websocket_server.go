@@ -39,28 +39,8 @@ func (h *Hub) run() {
 	for {
 		select {
 		case client := <-h.register:
-			fmt.Println("register starting...")
-			//!!!! something here after the first regiseter ?
 
-			// h.mutex.Lock()
 			h.clients[client] = true
-			// h.mutex.Unlock()
-
-			// // Notify everyone that someone joined
-			// joinMsg := Message{
-			// 	Username: client.username,
-			// 	Content:  fmt.Sprintf("%s joined the chat", client.username),
-			// 	Type:     "join",
-			// }
-
-			// // Use non-blocking send
-			// select {
-			// case h.broadcast <- joinMsg:
-			//     // Successfully sent
-			// default:
-			//     // Channel is full or no receivers, skip
-			//     fmt.Println("Warning: Could not broadcast join message")
-			// }
 
 			fmt.Printf("Client %s connected. Total clients: %d\n", client.username, len(h.clients))
 
