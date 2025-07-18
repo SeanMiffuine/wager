@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"flag"
+
 	// "encoding/json"
 	"fmt"
 	"log"
@@ -98,12 +100,12 @@ func (c *Client) writePump() {
 
 func main() {
 
+	var serverMode = flag.Bool("s", false, "Run as server")
+
+	flag.Parse()
 	reader := bufio.NewReader(os.Stdin)
 
-	servOrClient, _ := reader.ReadString('\n')
-	servOrClient = strings.TrimSpace(servOrClient)
-
-	if servOrClient == "s" {
+	if *serverMode {
 		// if setup server
 		hub := newHub()
 		go hub.run()
@@ -121,9 +123,11 @@ func main() {
 		fmt.Println("=============================")
 
 		log.Fatal(http.ListenAndServe(":8080", nil))
+
+		// ends here
 	}
 
-	// Get server address from user
+	// if client
 	fmt.Print("Enter server address (e.g., localhost:8080 or 192.168.1.100:8080): ")
 	serverAddr, _ := reader.ReadString('\n')
 	serverAddr = strings.TrimSpace(serverAddr)
@@ -250,7 +254,7 @@ func main() {
 
 			// Wait for server to close connection
 			select {
-				case <-time.After(time.Second):
+			case <-time.After(time.Second):
 			}
 			return
 		}
