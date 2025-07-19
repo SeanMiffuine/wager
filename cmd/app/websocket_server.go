@@ -50,13 +50,13 @@ func (h *Hub) run() {
 				delete(h.clients, client)
 				close(client.send)
 
-				// Notify everyone that someone left
-				leaveMsg := Message{
-					Username: client.username,
-					Content:  fmt.Sprintf("%s left the chat", client.username),
-					Type:     "leave",
-				}
-				h.broadcast <- leaveMsg
+				// // Notify everyone that someone left
+				// leaveMsg := Message{
+				// 	Username: client.username,
+				// 	Content:  fmt.Sprintf("%s left the chat", client.username),
+				// 	Type:     "leave",
+				// }
+				// h.broadcast <- leaveMsg
 
 				log.Printf("Client %s disconnected. Total clients: %d", client.username, len(h.clients))
 			}

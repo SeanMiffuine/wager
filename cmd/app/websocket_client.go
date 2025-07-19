@@ -101,9 +101,20 @@ func (c *Client) writePump() {
 func main() {
 
 	var serverMode = flag.Bool("s", false, "Run as server")
+	var localMode = flag.Bool("l", false, "Run server locally")
+	var serverAddr string
+	var scheme string
 
-	flag.Parse()
+	flag.Parse() // parse flags
 	reader := bufio.NewReader(os.Stdin)
+
+	if *localMode { // after parse
+		serverAddr = "localhost:8080"
+		scheme = "ws"
+	} else {
+		serverAddr = "wager-kd8l.onrender.com"
+		scheme = "wss"
+	}
 
 	if *serverMode {
 		// if setup server
@@ -116,24 +127,20 @@ func main() {
 
 		// Get and display server information
 		fmt.Println("=== WebSocket Chat Server ===")
-		fmt.Println("Server starting on port 8080")
 		fmt.Println("Share this information with clients:")
-		fmt.Println("- If connecting locally: ws://localhost:8080/ws")
-		fmt.Println("- If connecting remotely: ws://YOUR_PUBLIC_IP:8080/ws")
-		fmt.Println("=============================")
 
-		log.Fatal(http.ListenAndServe(":8080", nil))
-
-		// ends here
-	}
-
-	// if client
-	fmt.Print("Enter server address (e.g., localhost:8080 or 192.168.1.100:8080): ")
-	serverAddr, _ := reader.ReadString('\n')
-	serverAddr = strings.TrimSpace(serverAddr)
-
-	if serverAddr == "" {
-		serverAddr = "localhost:8080"
+		if *localMode {
+			serverAddr = "localhost:8080"
+			fmt.Println("Running locally on ws://localhost:8080/ws")
+			fmt.Println("=============================")
+			log.Fatal(http.ListenAndServe(serverAddr, nil))
+		} else {
+			port := os.Getenv("PORT")
+			fmt.Println("Serving on Render's PORT env variable")
+			fmt.Println("=============================")
+			log.Fatal(http.ListenAndServe(":"+port, nil))
+		}
+		// server ends here
 	}
 
 	fmt.Print("Enter your username: ")
@@ -146,7 +153,7 @@ func main() {
 
 	// Create WebSocket URL
 	u := url.URL{
-		Scheme:   "ws",
+		Scheme:   scheme,
 		Host:     serverAddr,
 		Path:     "/ws",
 		RawQuery: "username=" + url.QueryEscape(username),
