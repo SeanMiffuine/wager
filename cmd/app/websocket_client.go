@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -143,23 +144,19 @@ func main() {
 		// server ends here
 	}
 
-	fmt.Print("Enter your username: ")
-	username, _ := reader.ReadString('\n')
-	username = strings.TrimSpace(username)
-
-	if username == "" {
-		username = "Anonymous"
-	}
+	// asssign client id
+	uuid := uuid.New().String()
+	fmt.Println("Client ID:", uuid)
 
 	// Create WebSocket URL
 	u := url.URL{
-		Scheme:   scheme,
-		Host:     serverAddr,
-		Path:     "/ws",
-		RawQuery: "username=" + url.QueryEscape(username),
+		Scheme: scheme,
+		Host:   serverAddr,
+		Path:   "/ws",
+		// RawQuery: "username=" + url.QueryEscape(username),
 	}
 
-	fmt.Printf("Connecting to %s as %s...\n", u.String(), username)
+	// fmt.Printf("Connecting to %s as %s...\n", u.String(), username)
 
 	// Connect to WebSocket server
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -171,6 +168,16 @@ func main() {
 	fmt.Println("Connected! Type messages and press Enter to send.")
 	fmt.Println("Type 'quit' to exit, '/users' to see online users.")
 	fmt.Println("========================================")
+
+	// Get user input for username
+	fmt.Print("Enter your username: ")
+	username, _ := reader.ReadString('\n')
+	username = strings.TrimSpace(username)
+
+	// keep prompting
+	if username == "" {
+		username = "Anonymous" + uuid[:8] // generate a unique username
+	}
 
 	// Channel to handle interrupt signal
 	interrupt := make(chan os.Signal, 1)
@@ -190,6 +197,7 @@ func main() {
 			}
 
 			// Format and display the message based on type
+
 			timestamp := time.Now().Format("15:04:05")
 			switch msg.Type {
 			case "message":
@@ -199,6 +207,8 @@ func main() {
 			case "leave":
 				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
 			}
+			// case "createRoom":
+			// 	fmt.Printf("[%s] Room created: %s\n", timestamp, msg)
 		}
 	}()
 
@@ -231,23 +241,20 @@ func main() {
 					fmt.Println("*** Available commands: /users, /help, quit ***")
 					continue
 				default:
-					fmt.Println("*** Unknown command. Type /help for available commands ***")
+					msg := Message{
+						Username: username,
+						Content:  message,
+						Type:     "message",
+					}
+
+					err := conn.WriteJSON(msg)
+					if err != nil {
+						log.Println("Write error:", err)
+						return
+					}
 					continue
 				}
 			}
-
-			msg := Message{
-				Username: username,
-				Content:  message,
-				Type:     "message",
-			}
-
-			err := conn.WriteJSON(msg)
-			if err != nil {
-				log.Println("Write error:", err)
-				return
-			}
-			// fmt.Printf("[%s] You: %s\n", time.Now().Format("15:04:05"), message)
 
 		case <-interrupt:
 			fmt.Println("\nDisconnecting...")

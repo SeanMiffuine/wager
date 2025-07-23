@@ -14,10 +14,12 @@ type Client struct {
 	conn     *websocket.Conn
 	username string
 	send     chan Message
+	id       int // identify which client
 }
 
 // Hub maintains the set of active clients and broadcasts messages to them
 type Hub struct {
+	usernames  map[string]bool // needed to prevent dupes
 	clients    map[*Client]bool
 	broadcast  chan Message
 	register   chan *Client

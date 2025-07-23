@@ -1,0 +1,57 @@
+package main
+
+
+import (
+	"fmt"
+)
+
+// on server, keep some sort of enum for all commands, and whether or not there are arguements ???
+
+// Calling server to create a game room, returns a room code to join
+func (conn *websocket.Conn) createRoom {
+	var roomCode string
+	err := conn.WriteJSON(Message{
+		Type: "create_room",
+	})
+	if err != nil {
+		log.Println("Error creating room:", err)
+		return
+	}
+}
+
+// Join a game room with a given code
+func (conn *websocket.Conn) joinRoom(roomCode string) {
+	err := conn.WriteJSON(Message{
+		Type: "join_room",
+		Content: roomCode,
+	})
+	if err != nil {
+		log.Println("Error joining room:", err)
+		return
+	}
+}
+
+// Click to start game
+func (conn *websocket.Conn) startGame(roomCode string) {
+	err := conn.WriteJSON(Message{
+		Type: "start_game",
+		Content: roomCode,
+	})
+	if err != nil {
+		log.Println("Error starting game:", err)
+		return
+	}
+}
+
+// Wager action in game
+func (conn *websocket.Conn) wager(roomCode string, action string, amount int) {
+	err := conn.WriteJSON(Message{
+		Type: "wager",
+		Content: fmt.Sprintf("%s %d", action, amount),
+	})
+	if err != nil {
+		log.Println("Error sending wager action:", err)
+		return
+	}
+}
+
