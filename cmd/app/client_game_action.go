@@ -1,15 +1,16 @@
 package main
 
-
 import (
 	"fmt"
+	"log"
+
+	"github.com/gorilla/websocket"
 )
 
 // on server, keep some sort of enum for all commands, and whether or not there are arguements ???
 
 // Calling server to create a game room, returns a room code to join
-func (conn *websocket.Conn) createRoom {
-	var roomCode string
+func createRoom(conn *websocket.Conn) {
 	err := conn.WriteJSON(Message{
 		Type: "create_room",
 	})
@@ -20,9 +21,9 @@ func (conn *websocket.Conn) createRoom {
 }
 
 // Join a game room with a given code
-func (conn *websocket.Conn) joinRoom(roomCode string) {
+func joinRoom(conn *websocket.Conn, roomCode string) {
 	err := conn.WriteJSON(Message{
-		Type: "join_room",
+		Type:    "join_room",
 		Content: roomCode,
 	})
 	if err != nil {
@@ -32,9 +33,9 @@ func (conn *websocket.Conn) joinRoom(roomCode string) {
 }
 
 // Click to start game
-func (conn *websocket.Conn) startGame(roomCode string) {
+func startGame(conn *websocket.Conn, roomCode string) {
 	err := conn.WriteJSON(Message{
-		Type: "start_game",
+		Type:    "start_game",
 		Content: roomCode,
 	})
 	if err != nil {
@@ -44,9 +45,9 @@ func (conn *websocket.Conn) startGame(roomCode string) {
 }
 
 // Wager action in game
-func (conn *websocket.Conn) wager(roomCode string, action string, amount int) {
+func wager(conn *websocket.Conn, roomCode string, action string, amount int) {
 	err := conn.WriteJSON(Message{
-		Type: "wager",
+		Type:    "wager",
 		Content: fmt.Sprintf("%s %d", action, amount),
 	})
 	if err != nil {
@@ -54,4 +55,3 @@ func (conn *websocket.Conn) wager(roomCode string, action string, amount int) {
 		return
 	}
 }
-
