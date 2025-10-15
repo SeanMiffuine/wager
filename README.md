@@ -3,54 +3,63 @@
 ## Overview
 This project is a Go application that provides a set of functionalities through a well-structured architecture. It includes various components such as handlers, models, services, and utility functions, organized into appropriate directories.
 
-## Project Structure
+Wager — terminal multiplayer bribing game
+
+Overview
+
+This repository contains a simple terminal-based multiplayer game (over WebSockets).
+Players chat and place bets each round. The highest bet wins a "bribe" for that round.
+The player with most bribes at game end is the winner (REAL DICTATOR OF AMERICA).
+
+Rules (summary)
+- 2 - 32 players
+- All players start with an initial USD (default $1000)
+- Each round players can wager 0 up to their USD
+- Highest wager(s) win the bribe (ties allowed)
+- Everyone pays their wager regardless of win/loss
+- When only one player has money left, they receive 1 automatic bribe
+- Game ends when players run out of money or last player condition triggers
+
+How to run (local)
+
+Start server (local):
+
+```bash
+cd /path/to/wager
+go run ./cmd/app -s -l
 ```
-my-go-project
-├── cmd
-│   └── app
-│       └── main.go          # Entry point of the application
-├── internal
-│   ├── handler
-│   │   └── handler.go       # HTTP handlers for the application
-│   ├── model
-│   │   └── model.go         # Data models used in the application
-│   └── service
-│       └── service.go       # Business logic of the application
-├── pkg
-│   └── utils
-│       └── utils.go         # Utility functions for common tasks
-├── api
-│   └── openapi.yaml         # API specification in OpenAPI format
-├── configs
-│   └── config.yaml          # Configuration settings for the application
-├── go.mod                   # Module definition for the Go project
-├── go.sum                   # Checksums for module dependencies
-└── README.md                # Documentation for the project
+
+Flags for server:
+- -round <seconds> : duration of each betting round (default 20)
+- -initial <USD>   : initial USD for each player (default 1000)
+
+Start a client (in separate terminal):
+
+```bash
+cd /path/to/wager
+go run ./cmd/app
+# enter username when prompted
 ```
 
-## Setup Instructions
-1. **Clone the repository:**
-   ```
-   git clone <repository-url>
-   cd my-go-project
-   ```
+Client commands
+- /start           — start a new round
+- /bet <amount>    — place a bet for the current round
+- /status          — request the server to broadcast current game state
+- /help            — show available commands
+- quit             — exit client
 
-2. **Install dependencies:**
-   ```
-   go mod tidy
-   ```
+Testing
 
-3. **Run the application:**
-   ```
-   go run cmd/app/main.go
-   ```
+Run unit tests for the game logic:
 
-## Usage
-- Access the application through the specified endpoints defined in the API specification.
-- Refer to the `api/openapi.yaml` file for detailed information on the available endpoints and their usage.
+```bash
+cd /path/to/wager
+go test ./cmd/app
+```
 
-## Contributing
-Contributions are welcome! Please feel free to submit a pull request or open an issue for any suggestions or improvements.
+Notes & next steps
+- Usernames are made unique on the server if collisions occur (a suffix is appended).
+- Server broadcasts join/leave notifications and maintains player online state and join order.
+- Bet payloads are validated on the server; malformed bets receive an error message.
 
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
+Contributions welcome — open an issue or PR with improvements (UI, persistent leaderboard, better CLI).

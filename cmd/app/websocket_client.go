@@ -2,9 +2,8 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
-
-	// "encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,11 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Message struct {
-	Username string `json:"username"`
-	Content  string `json:"content"`
-	Type     string `json:"type"`
-}
+// Message type is declared in websocket_server.go and shared across the package.
 
 func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -73,8 +68,8 @@ func (c *Client) readPump(hub *Hub) {
 
 		// Set the username from the client
 		msg.Username = c.username
-		msg.Type = "message"
 
+		// forward message to hub for processing (chat/bet/start/status)
 		hub.broadcast <- msg
 	}
 }
@@ -102,6 +97,8 @@ func main() {
 
 	var serverMode = flag.Bool("s", false, "Run as server")
 	var localMode = flag.Bool("l", false, "Run server locally")
+	var roundSeconds = flag.Int("round", 20, "Round duration in seconds")
+	var initialUSD = flag.Int("initial", 1000, "Initial USD for each player")
 	var serverAddr string
 	var scheme string
 
@@ -117,8 +114,11 @@ func main() {
 	}
 
 	if *serverMode {
-		// if setup server
-		hub := newHub()
+	// if setup server
+	hub := newHub()
+	// apply configurable options
+	hub.roundDurationSeconds = *roundSeconds
+	hub.initialUSD = *initialUSD
 		go hub.run()
 
 		http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -189,16 +189,40 @@ func main() {
 				return
 			}
 
-			// Format and display the message based on type
-			timestamp := time.Now().Format("15:04:05")
-			switch msg.Type {
-			case "message":
-				fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
-			case "join":
-				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
-			case "leave":
-				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
-			}
+				// Format and display the message based on type
+				timestamp := time.Now().Format("15:04:05")
+				switch msg.Type {
+				case "message":
+					fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
+				case "join":
+					fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+				case "name_assigned":
+					// server assigned or adjusted our username
+					fmt.Printf("[%s] *** Assigned username: %s ***\n", timestamp, msg.Content)
+				case "leave":
+					fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+				case "round_start":
+					var p map[string]interface{}
+					if len(msg.Payload) > 0 {
+						_ = json.Unmarshal(msg.Payload, &p)
+					}
+					fmt.Printf("[%s] *** Round %v started (duration %vs) ***\n", timestamp, p["round"], p["duration"])
+				case "round_result":
+					var res map[string]interface{}
+					if len(msg.Payload) > 0 {
+						_ = json.Unmarshal(msg.Payload, &res)
+					}
+					fmt.Printf("[%s] *** Round %v resolved. Winners: %v, Max: %v ***\n", timestamp, res["round"], res["winners"], res["max"])
+				case "game_over":
+					var final map[string]interface{}
+					if len(msg.Payload) > 0 {
+						_ = json.Unmarshal(msg.Payload, &final)
+					}
+					fmt.Printf("[%s] *** GAME OVER ***\nPlayers:\n%v\n", timestamp, final["players"])
+				default:
+					// unknown type - print raw
+					fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
+				}
 		}
 	}()
 
@@ -223,12 +247,40 @@ func main() {
 		case message := <-sendChan:
 			// Handle special commands
 			if strings.HasPrefix(message, "/") {
-				switch message {
-				case "/users":
-					fmt.Println("*** Command not implemented yet ***")
+				parts := strings.SplitN(message, " ", 2)
+				cmd := parts[0]
+				switch cmd {
+				case "/bet":
+					amt := 0
+					if len(parts) > 1 {
+						fmt.Sscanf(parts[1], "%d", &amt)
+					} else {
+						fmt.Println("Usage: /bet <amount>")
+						continue
+					}
+					payload, _ := json.Marshal(map[string]int{"amount": amt})
+					msg := Message{Username: username, Type: "bet", Content: fmt.Sprintf("bet %d", amt), Payload: payload}
+					if err := conn.WriteJSON(msg); err != nil {
+						log.Println("Write error:", err)
+						return
+					}
+					continue
+				case "/start":
+					msg := Message{Username: username, Type: "start", Content: "start"}
+					if err := conn.WriteJSON(msg); err != nil {
+						log.Println("Write error:", err)
+						return
+					}
+					continue
+				case "/status":
+					msg := Message{Username: username, Type: "status", Content: "status"}
+					if err := conn.WriteJSON(msg); err != nil {
+						log.Println("Write error:", err)
+						return
+					}
 					continue
 				case "/help":
-					fmt.Println("*** Available commands: /users, /help, quit ***")
+					fmt.Println("*** Available commands: /bet <amount>, /start, /status, /help, quit ***")
 					continue
 				default:
 					fmt.Println("*** Unknown command. Type /help for available commands ***")
