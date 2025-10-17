@@ -41,12 +41,31 @@ go run ./cmd/app
 # enter username when prompted
 ```
 
-Client commands
-- /start           — start a new round
-- /bet <amount>    — place a bet for the current round
-- /status          — request the server to broadcast current game state
+Client commands (room workflow)
+
+Workflow notes:
+- Players can create or join a room using a short human-friendly code.
+- The player who creates a room becomes the host and is automatically joined to that room.
+
+Commands:
+- /create [CODE]   — create a new room. Optionally provide a short code (e.g. /create ABC1). If no code is provided, the server generates a friendly code (e.g. K7QP) and replies with `room_created`.
+- /join CODE       — join an existing room with the given code (e.g. /join K7QP). Server replies with `room_joined` or `error` if not found.
+- /start           — start the negotiation + betting cycle for your current room (host or any player depending on room rules). The room will broadcast `round_start` and start the negotiation timer.
+- /bet <amount>    — submit a wager for the current room's betting phase (must be <= your USD). Server validates and replies with `bet_confirm` or `error`.
+- /status          — request the server to broadcast the current game state for your room.
 - /help            — show available commands
 - quit             — exit client
+
+Examples:
+- Host creates a room and gets the code back:
+	- Client types: `/create` -> server replies `room_created K7QP`
+	- Other players: `/join K7QP` to join that room.
+- Typical round flow in a room:
+	- Host or any player issues `/start`
+	- Negotiation timer runs (chat allowed)
+	- After timer, players place `/bet 200` (or 0)
+	- When resolved, server broadcasts `round_result` and the next negotiation begins
+
 
 Testing
 

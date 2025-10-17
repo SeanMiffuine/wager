@@ -32,12 +32,18 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		username = "Anonymous"
 	}
 
+	// Get room and create flag
+	room := r.URL.Query().Get("room")
+	create := r.URL.Query().Get("create")
+
 	fmt.Println("Username parsed:", username)
 
 	client := &Client{
 		conn:     conn,
 		username: username,
 		send:     make(chan Message, 256),
+		room:     room,
+		isHost:   create == "1",
 	}
 
 	// something here doesnt go through after 1 connection
@@ -66,8 +72,9 @@ func (c *Client) readPump(hub *Hub) {
 			break
 		}
 
-		// Set the username from the client
+		// Set the username and room from the client
 		msg.Username = c.username
+		msg.Room = c.room
 
 		// forward message to hub for processing (chat/bet/start/status)
 		hub.broadcast <- msg
@@ -93,6 +100,18 @@ func (c *Client) writePump() {
 	}
 }
 
+// sendJSONWithDebug marshals the message and prints it to stdout for debugging,
+// then sends it over the websocket connection.
+func sendJSONWithDebug(conn *websocket.Conn, msg Message) error {
+	b, err := json.Marshal(msg)
+	if err != nil {
+		log.Println("DEBUG marshal error:", err)
+	} else {
+		fmt.Printf("DEBUG outgoing: %s\n", string(b))
+	}
+	return conn.WriteJSON(msg)
+}
+
 func main() {
 
 	var serverMode = flag.Bool("s", false, "Run as server")
@@ -114,11 +133,11 @@ func main() {
 	}
 
 	if *serverMode {
-	// if setup server
-	hub := newHub()
-	// apply configurable options
-	hub.roundDurationSeconds = *roundSeconds
-	hub.initialUSD = *initialUSD
+		// if setup server
+		hub := newHub()
+		// apply configurable options
+		hub.roundDurationSeconds = *roundSeconds
+		hub.initialUSD = *initialUSD
 		go hub.run()
 
 		http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -189,40 +208,54 @@ func main() {
 				return
 			}
 
-				// Format and display the message based on type
-				timestamp := time.Now().Format("15:04:05")
-				switch msg.Type {
-				case "message":
-					fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
-				case "join":
-					fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
-				case "name_assigned":
-					// server assigned or adjusted our username
-					fmt.Printf("[%s] *** Assigned username: %s ***\n", timestamp, msg.Content)
-				case "leave":
-					fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
-				case "round_start":
-					var p map[string]interface{}
-					if len(msg.Payload) > 0 {
-						_ = json.Unmarshal(msg.Payload, &p)
-					}
-					fmt.Printf("[%s] *** Round %v started (duration %vs) ***\n", timestamp, p["round"], p["duration"])
-				case "round_result":
-					var res map[string]interface{}
-					if len(msg.Payload) > 0 {
-						_ = json.Unmarshal(msg.Payload, &res)
-					}
-					fmt.Printf("[%s] *** Round %v resolved. Winners: %v, Max: %v ***\n", timestamp, res["round"], res["winners"], res["max"])
-				case "game_over":
-					var final map[string]interface{}
-					if len(msg.Payload) > 0 {
-						_ = json.Unmarshal(msg.Payload, &final)
-					}
-					fmt.Printf("[%s] *** GAME OVER ***\nPlayers:\n%v\n", timestamp, final["players"])
-				default:
-					// unknown type - print raw
-					fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
+			// Format and display the message based on type
+			timestamp := time.Now().Format("15:04:05")
+			switch msg.Type {
+			case "message":
+				fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
+			case "join":
+				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+			case "name_assigned":
+				// server assigned or adjusted our username
+				fmt.Printf("[%s] *** Assigned username: %s ***\n", timestamp, msg.Content)
+			case "room_created":
+				fmt.Printf("[%s] *** Room created: %s ***\n", timestamp, msg.Content)
+			case "room_joined":
+				fmt.Printf("[%s] *** Joined room: %s ***\n", timestamp, msg.Content)
+			case "bet_confirm":
+				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+			case "status":
+				var st map[string]interface{}
+				if len(msg.Payload) > 0 {
+					_ = json.Unmarshal(msg.Payload, &st)
 				}
+				fmt.Printf("[%s] *** Status: %v ***\n", timestamp, st)
+			case "error":
+				fmt.Printf("[%s] !!! ERROR: %s !!!\n", timestamp, msg.Content)
+			case "leave":
+				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+			case "round_start":
+				var p map[string]interface{}
+				if len(msg.Payload) > 0 {
+					_ = json.Unmarshal(msg.Payload, &p)
+				}
+				fmt.Printf("[%s] *** Round %v started (duration %vs) ***\n", timestamp, p["round"], p["duration"])
+			case "round_result":
+				var res map[string]interface{}
+				if len(msg.Payload) > 0 {
+					_ = json.Unmarshal(msg.Payload, &res)
+				}
+				fmt.Printf("[%s] *** Round %v resolved. Winners: %v, Max: %v ***\n", timestamp, res["round"], res["winners"], res["max"])
+			case "game_over":
+				var final map[string]interface{}
+				if len(msg.Payload) > 0 {
+					_ = json.Unmarshal(msg.Payload, &final)
+				}
+				fmt.Printf("[%s] *** GAME OVER ***\nPlayers:\n%v\n", timestamp, final["players"])
+			default:
+				// unknown type - print raw
+				fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
+			}
 		}
 	}()
 
@@ -260,21 +293,48 @@ func main() {
 					}
 					payload, _ := json.Marshal(map[string]int{"amount": amt})
 					msg := Message{Username: username, Type: "bet", Content: fmt.Sprintf("bet %d", amt), Payload: payload}
-					if err := conn.WriteJSON(msg); err != nil {
+					if err := sendJSONWithDebug(conn, msg); err != nil {
 						log.Println("Write error:", err)
 						return
 					}
 					continue
 				case "/start":
 					msg := Message{Username: username, Type: "start", Content: "start"}
-					if err := conn.WriteJSON(msg); err != nil {
+					if err := sendJSONWithDebug(conn, msg); err != nil {
+						log.Println("Write error:", err)
+						return
+					}
+					continue
+				case "/create":
+					// optional room code: /create ABC1
+					roomCode := ""
+					if len(parts) > 1 {
+						roomCode = strings.TrimSpace(parts[1])
+					}
+					payload, _ := json.Marshal(map[string]string{"room": roomCode})
+					msg := Message{Username: username, Type: "create_room", Content: "create", Payload: payload}
+					if err := sendJSONWithDebug(conn, msg); err != nil {
+						log.Println("Write error:", err)
+						return
+					}
+					continue
+				case "/join":
+					// /join CODE
+					if len(parts) <= 1 {
+						fmt.Println("Usage: /join <roomcode>")
+						continue
+					}
+					roomCode := strings.TrimSpace(parts[1])
+					payload, _ := json.Marshal(map[string]string{"room": roomCode})
+					msg := Message{Username: username, Type: "join_room", Content: "join", Payload: payload}
+					if err := sendJSONWithDebug(conn, msg); err != nil {
 						log.Println("Write error:", err)
 						return
 					}
 					continue
 				case "/status":
 					msg := Message{Username: username, Type: "status", Content: "status"}
-					if err := conn.WriteJSON(msg); err != nil {
+					if err := sendJSONWithDebug(conn, msg); err != nil {
 						log.Println("Write error:", err)
 						return
 					}
@@ -294,8 +354,7 @@ func main() {
 				Type:     "message",
 			}
 
-			err := conn.WriteJSON(msg)
-			if err != nil {
+			if err := sendJSONWithDebug(conn, msg); err != nil {
 				log.Println("Write error:", err)
 				return
 			}
