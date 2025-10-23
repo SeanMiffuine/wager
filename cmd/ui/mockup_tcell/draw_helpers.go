@@ -6,7 +6,7 @@ import (
 
 func drawBox(s tcell.Screen, x, y, w, h int, title string) {
 	// top/bottom borders
-	style := tcell.StyleDefault.Foreground(tcell.ColorWhite)
+	style := BoxStyle
 	if w <= 0 || h <= 0 {
 		return
 	}
@@ -40,6 +40,6 @@ func drawText(s tcell.Screen, x, y, w int, text string) {
 		runes = runes[:w]
 	}
 	for i, r := range runes {
-		s.SetContent(x+i, y, r, nil, tcell.StyleDefault)
+		s.SetContent(x+i, y, r, nil, TextStyle)
 	}
 }

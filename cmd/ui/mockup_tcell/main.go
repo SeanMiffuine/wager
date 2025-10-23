@@ -32,11 +32,17 @@ func main() {
 	if err := s.Init(); err != nil {
 		log.Fatalf("failed to init screen: %v", err)
 	}
+	// diagnostic: report terminal color capabilities and relevant env
+	log.Printf("TERM=%s COLORTERM=%s TCELL_TRUECOLOR=%s Screen.Colors()=%d",
+		os.Getenv("TERM"), os.Getenv("COLORTERM"), os.Getenv("TCELL_TRUECOLOR"), s.Colors())
 	defer s.Fini()
 
-	defStyle := tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorWhite)
+	// initialize and apply theme
+	initTheme()
+	defStyle := TextStyle
 	s.SetStyle(defStyle)
-	s.Clear()
+	// paint whole terminal background with themed space
+	s.Fill(' ', defStyle)
 
 	chatModule := NewChatModule()
 	gameModule := NewGameModule()
@@ -90,7 +96,8 @@ func main() {
 }
 
 func renderAll(s tcell.Screen, chat *ChatModule, game *GameModule, players *PlayerModule) {
-	s.Clear()
+	// ensure logical buffer uses theme background
+	s.Fill(' ', BoxStyle)
 	// w, h := s.Size()
 
 	// leftW := 40
@@ -113,7 +120,7 @@ func renderAll(s tcell.Screen, chat *ChatModule, game *GameModule, players *Play
 
 	instr := "Press Esc/Ctrl+C to quit. Press 'u' to send a manual chat update."
 	for i, r := range instr {
-		s.SetContent(i, TERMINAL_HEIGHT-1, r, nil, tcell.StyleDefault.Foreground(tcell.ColorYellow))
+		s.SetContent(i, TERMINAL_HEIGHT-1, r, nil, AccentStyle)
 	}
 }
 
