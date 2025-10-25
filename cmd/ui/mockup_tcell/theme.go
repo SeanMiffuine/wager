@@ -13,6 +13,13 @@ var (
 	AccentStyle tcell.Style
 )
 
+// Preserve extended-ASCII shading runes for later use (kept as runes).
+const (
+	Ascii176 = rune(176) // extended-ASCII 176 (light shade) — kept for future use
+	Ascii177 = rune(177) // extended-ASCII 177 (medium shade)
+	Ascii178 = rune(178) // extended-ASCII 178 (dark shade)
+)
+
 // initTheme initializes a simple uniform theme. Call before rendering.
 func initTheme() {
 	// Pick whatever RGB/hex values you like. TrueColor() forces RGB fidelity

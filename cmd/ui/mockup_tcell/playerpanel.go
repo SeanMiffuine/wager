@@ -21,8 +21,7 @@ type PlayerModule struct {
 
 func NewPlayerModule() *PlayerModule {
 	pm := &PlayerModule{players: make(map[string]*Player), notifyC: make(chan struct{}, 1)}
-	pm.players["alice"] = &Player{Name: "alice", USD: 1000, Bribe: 0}
-	pm.players["bob"] = &Player{Name: "bob", USD: 900, Bribe: 0}
+	// start with an empty player set; will be populated from API responses
 	return pm
 }
 

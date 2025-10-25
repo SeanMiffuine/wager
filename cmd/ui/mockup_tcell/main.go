@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"time"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -47,6 +46,8 @@ func main() {
 	chatModule := NewChatModule()
 	gameModule := NewGameModule()
 	playerModule := NewPlayerModule()
+	menuModule := NewMenuModule()
+	currentScreen := "menu" // start on the menu screen
 
 	// listen for module updates and re-render
 	go func() {
@@ -55,49 +56,72 @@ func main() {
 			case <-chatModule.Notify():
 			case <-gameModule.Notify():
 			case <-playerModule.Notify():
+			case <-menuModule.Notify():
 			}
-			renderAll(s, chatModule, gameModule, playerModule)
+			renderAll(s, chatModule, gameModule, playerModule, menuModule, currentScreen)
 			s.Show()
 		}
 	}()
 
 	// initial render
-	renderAll(s, chatModule, gameModule, playerModule)
+	renderAll(s, chatModule, gameModule, playerModule, menuModule, currentScreen)
 	s.Show()
 
-	// demo updates
-	go func() {
-		i := 0
-		for {
-			time.Sleep(2 * time.Second)
-			i++
-			chatModule.SendMessage("System", "Tick update #"+time.Now().Format("15:04:05"))
-			gameModule.SetRound(i)
-			playerModule.UpdatePlayer("alice", 1000-i*10, i%3)
-		}
-	}()
+	// demo updates removed: mock data and periodic updates have been disabled
 
 	for {
 		ev := s.PollEvent()
 		switch tev := ev.(type) {
 		case *tcell.EventKey:
+			// global keys
 			if tev.Key() == tcell.KeyEscape || tev.Key() == tcell.KeyCtrlC {
 				s.Fini()
 				os.Exit(0)
 			}
-			if tev.Rune() == 'u' {
-				chatModule.SendMessage("You", "Manual update")
+			// toggle menu with 'm'
+			if tev.Rune() == 'm' {
+				if currentScreen == "game" {
+					currentScreen = "menu"
+				} else {
+					currentScreen = "game"
+				}
+				renderAll(s, chatModule, gameModule, playerModule, menuModule, currentScreen)
+				s.Show()
+				continue
+			}
+			if currentScreen == "game" {
+				if tev.Rune() == 'u' {
+					chatModule.SendMessage("You", "Manual update")
+				}
+			} else if currentScreen == "menu" {
+				// route navigation keys to menu
+				switch tev.Key() {
+				case tcell.KeyLeft, tcell.KeyUp:
+					menuModule.Move(-1)
+				case tcell.KeyRight, tcell.KeyDown:
+					menuModule.Move(1)
+				case tcell.KeyEnter:
+					sel := menuModule.Activate()
+					log.Printf("Menu activated selection=%d", sel)
+					// simple behavior: go back to game screen after activate
+					currentScreen = "game"
+				}
 			}
 		case *tcell.EventResize:
-			renderAll(s, chatModule, gameModule, playerModule)
+			renderAll(s, chatModule, gameModule, playerModule, menuModule, currentScreen)
 			s.Sync()
 		}
 	}
 }
 
-func renderAll(s tcell.Screen, chat *ChatModule, game *GameModule, players *PlayerModule) {
+func renderAll(s tcell.Screen, chat *ChatModule, game *GameModule, players *PlayerModule, menu *MenuModule, currentScreen string) {
 	// ensure logical buffer uses theme background
 	s.Fill(' ', BoxStyle)
+	// If menu is active, render it full screen and return
+	if currentScreen == "menu" && menu != nil {
+		menu.Render(s, 0, 0, TERMINAL_WIDTH, TERMINAL_HEIGHT)
+		return
+	}
 	// w, h := s.Size()
 
 	// leftW := 40

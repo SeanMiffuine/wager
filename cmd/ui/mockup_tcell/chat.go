@@ -14,7 +14,7 @@ type ChatModule struct {
 }
 
 func NewChatModule() *ChatModule {
-	return &ChatModule{lines: []string{"[21:01] Sean: Hi chat !", "[21:02] Alex: Yes, whats up?"}, notifyC: make(chan struct{}, 1)}
+	return &ChatModule{lines: []string{}, notifyC: make(chan struct{}, 1)}
 }
 
 func (c *ChatModule) Notify() <-chan struct{} { return c.notifyC }
