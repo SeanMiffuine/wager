@@ -17,12 +17,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Message struct {
-	Username string `json:"username"`
-	Content  string `json:"content"`
-	Type     string `json:"type"`
-}
-
 func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

@@ -3,54 +3,82 @@
 ## Overview
 This project is a Go application that provides a set of functionalities through a well-structured architecture. It includes various components such as handlers, models, services, and utility functions, organized into appropriate directories.
 
-## Project Structure
+Wager — terminal multiplayer bribing game
+
+Overview
+
+This repository contains a simple terminal-based multiplayer game (over WebSockets).
+Players chat and place bets each round. The highest bet wins a "bribe" for that round.
+The player with most bribes at game end is the winner (REAL DICTATOR OF AMERICA).
+
+Rules (summary)
+- 2 - 32 players
+- All players start with an initial USD (default $1000)
+- Each round players can wager 0 up to their USD
+- Highest wager(s) win the bribe (ties allowed)
+- Everyone pays their wager regardless of win/loss
+- When only one player has money left, they receive 1 automatic bribe
+- Game ends when players run out of money or last player condition triggers
+
+How to run (local)
+
+Start server (local):
+
+```bash
+cd /path/to/wager
+go run ./cmd/app -s -l
 ```
-my-go-project
-├── cmd
-│   └── app
-│       └── main.go          # Entry point of the application
-├── internal
-│   ├── handler
-│   │   └── handler.go       # HTTP handlers for the application
-│   ├── model
-│   │   └── model.go         # Data models used in the application
-│   └── service
-│       └── service.go       # Business logic of the application
-├── pkg
-│   └── utils
-│       └── utils.go         # Utility functions for common tasks
-├── api
-│   └── openapi.yaml         # API specification in OpenAPI format
-├── configs
-│   └── config.yaml          # Configuration settings for the application
-├── go.mod                   # Module definition for the Go project
-├── go.sum                   # Checksums for module dependencies
-└── README.md                # Documentation for the project
+
+Flags for server:
+- -round <seconds> : duration of each betting round (default 20)
+- -initial <USD>   : initial USD for each player (default 1000)
+
+Start a client (in separate terminal):
+
+```bash
+cd /path/to/wager
+go run ./cmd/app
+# enter username when prompted
 ```
 
-## Setup Instructions
-1. **Clone the repository:**
-   ```
-   git clone <repository-url>
-   cd my-go-project
-   ```
+Client commands (room workflow)
 
-2. **Install dependencies:**
-   ```
-   go mod tidy
-   ```
+Workflow notes:
+- Players can create or join a room using a short human-friendly code.
+- The player who creates a room becomes the host and is automatically joined to that room.
 
-3. **Run the application:**
-   ```
-   go run cmd/app/main.go
-   ```
+Commands:
+- /create [CODE]   — create a new room. Optionally provide a short code (e.g. /create ABC1). If no code is provided, the server generates a friendly code (e.g. K7QP) and replies with `room_created`.
+- /join CODE       — join an existing room with the given code (e.g. /join K7QP). Server replies with `room_joined` or `error` if not found.
+- /start           — start the negotiation + betting cycle for your current room (host or any player depending on room rules). The room will broadcast `round_start` and start the negotiation timer.
+- /bet <amount>    — submit a wager for the current room's betting phase (must be <= your USD). Server validates and replies with `bet_confirm` or `error`.
+- /status          — request the server to broadcast the current game state for your room.
+- /help            — show available commands
+- quit             — exit client
 
-## Usage
-- Access the application through the specified endpoints defined in the API specification.
-- Refer to the `api/openapi.yaml` file for detailed information on the available endpoints and their usage.
+Examples:
+- Host creates a room and gets the code back:
+	- Client types: `/create` -> server replies `room_created K7QP`
+	- Other players: `/join K7QP` to join that room.
+- Typical round flow in a room:
+	- Host or any player issues `/start`
+	- Negotiation timer runs (chat allowed)
+	- After timer, players place `/bet 200` (or 0)
+	- When resolved, server broadcasts `round_result` and the next negotiation begins
 
-## Contributing
-Contributions are welcome! Please feel free to submit a pull request or open an issue for any suggestions or improvements.
 
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
+Testing
+
+Run unit tests for the game logic:
+
+```bash
+cd /path/to/wager
+go test ./cmd/app
+```
+
+Notes & next steps
+- Usernames are made unique on the server if collisions occur (a suffix is appended).
+- Server broadcasts join/leave notifications and maintains player online state and join order.
+- Bet payloads are validated on the server; malformed bets receive an error message.
+
+Contributions welcome — open an issue or PR with improvements (UI, persistent leaderboard, better CLI).

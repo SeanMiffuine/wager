@@ -1,0 +1,26 @@
+┌────────────────────────────────────────────────────────┬───────────────────────┐
+│ Game Screen - has all the updates                      │┌─────────────────────┐│
+│                                                        ││                     ││
+│ Graphics included here: lets users know if             ││                     ││
+│ negotiation round or wagering round.                   ││   Player graphic    ││
+│                                                        ││   goes here.        ││
+│ if wagering round, includes some sort of graphic       ││   ASCII art of      ││
+│ saying how many players have made their wager.         ││   the player        ││
+│                                                        ││                     ││
+│                                                        ││                     ││
+│                                                        ││                     ││
+│                                                        ││                     ││
+│                                                        ││                     ││
+│                                                        ││                     ││
+│                                                        ││                     ││
+┼────────────────────────────────────────────────────────┤│                     ││
+│  CHAT                                                  ││                     ││
+│                                                        │└─────────────────────┘│
+│  Sean: Hi chat !                                       │                       │
+│  Alex: Yes, whats up?                                  │   Player Name,        │
+│                                                        │   Money               │
+│                                                        │   Points              │
+│                                                        │                       │
+│                                                        │                       │
+│                                                        │                       │
+└────────────────────────────────────────────────────────┼───────────────────────┘
