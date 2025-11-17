@@ -66,11 +66,12 @@ type Game struct {
 
 // Message represents messages exchanged over websocket
 type Message struct {
-	Username string          `json:"username"`
-	Type     string          `json:"type"`
-	Content  string          `json:"content"`
-	Payload  json.RawMessage `json:"payload,omitempty"`
-	Room     string          `json:"room,omitempty"`
+	Username  string          `json:"username"`
+	Type      string          `json:"type"`
+	Content   string          `json:"content"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	Room      string          `json:"room,omitempty"`
+	Timestamp string          `json:"timestamp,omitempty"`
 }
 
 // Room is a self-contained game room with its own clients and game
@@ -82,6 +83,8 @@ type Room struct {
 	broadcast            chan Message
 	game                 *Game
 	tick                 chan bool
+	negotiation          bool
+	finished             bool
 	roundDurationSeconds int
 	initialUSD           int
 }
@@ -94,15 +97,25 @@ func newRoom(id string, roundSeconds, initial int) *Room {
 		unregister:           make(chan *Client),
 		broadcast:            make(chan Message),
 		tick:                 make(chan bool, 1),
+		negotiation:          false,
+		finished:             false,
 		roundDurationSeconds: roundSeconds,
 		initialUSD:           initial,
 	}
 }
 
 func (r *Room) safeBroadcast(m Message) {
-	select {
-	case r.broadcast <- m:
-	default:
+	// Stamp message with server time if not already stamped.
+	if m.Timestamp == "" {
+		m.Timestamp = time.Now().Format("15:04:05")
+	}
+	// Deliver the message to all connected clients in this room without blocking.
+	for c := range r.clients {
+		select {
+		case c.send <- m:
+		default:
+			// If the client's send buffer is full, drop the message for that client to avoid blocking.
+		}
 	}
 }
 
@@ -126,17 +139,29 @@ func (r *Room) startRound() {
 	if r.game == nil {
 		r.initializeGame()
 	}
+	// Do not start a new round if the room/game has finished
+	if r.finished {
+		return
+	}
 	if r.game.Active {
 		return
 	}
 	r.game.Active = true
 	r.game.Round++
+	// reset bets for the new round
+	r.game.Bets = make(map[string]int)
+	// enter negotiation phase (chat allowed)
+	r.negotiation = true
 	payload, _ := json.Marshal(map[string]interface{}{"round": r.game.Round, "duration": r.roundDurationSeconds})
-	r.safeBroadcast(Message{Type: "round_start", Content: "Round started", Payload: payload, Room: r.id})
+	r.safeBroadcast(Message{Type: "round_start", Content: "Negotiation started", Payload: payload, Room: r.id})
+	// start negotiation timer; when it expires, enter betting phase
 	go func() {
 		timer := time.NewTimer(time.Duration(r.roundDurationSeconds) * time.Second)
 		<-timer.C
-		r.tick <- true
+		r.negotiation = false
+		// notify room that betting phase has started
+		bp, _ := json.Marshal(map[string]interface{}{"round": r.game.Round})
+		r.safeBroadcast(Message{Type: "betting_start", Content: "Betting started", Payload: bp, Room: r.id})
 	}()
 }
 
@@ -169,11 +194,7 @@ func (r *Room) resolveRound() {
 			}
 		}
 	}
-	r.game.Bets = make(map[string]int)
-	r.game.Active = false
-	res := map[string]interface{}{"round": r.game.Round, "winners": winners, "max": max, "players": r.game.Players}
-	payload, _ := json.Marshal(res)
-	r.safeBroadcast(Message{Type: "round_result", Content: "Round resolved", Payload: payload, Room: r.id})
+	// Determine if game reached terminal condition (only 0 or 1 players have money)
 	alive := 0
 	last := ""
 	for _, p := range r.game.Players {
@@ -182,12 +203,32 @@ func (r *Room) resolveRound() {
 			last = p.Username
 		}
 	}
+
+	// If game is over, mark finished early to prevent races where a /start
+	// could be processed between clearing active state and marking finished.
 	if alive <= 1 {
+		r.finished = true
 		if last != "" {
 			if pl, ok := r.game.Players[last]; ok {
 				pl.Bribes++
+				// announce winner publicly with a fun message
+				winnerMsg := fmt.Sprintf("%s has won :) with %d bribes", pl.Username, pl.Bribes)
+				r.safeBroadcast(Message{Type: "game_winner", Content: winnerMsg, Room: r.id})
 			}
 		}
+	}
+
+	// clear bets and mark round inactive
+	r.game.Bets = make(map[string]int)
+	r.game.Active = false
+
+	// Announce winners publicly without revealing bet amounts
+	res := map[string]interface{}{"round": r.game.Round, "winners": winners}
+	payload, _ := json.Marshal(res)
+	r.safeBroadcast(Message{Type: "round_result", Content: "Round resolved", Payload: payload, Room: r.id})
+
+	// If the room was marked finished above, broadcast final game over payload
+	if r.finished {
 		final := map[string]interface{}{"players": r.game.Players}
 		pay, _ := json.Marshal(final)
 		r.safeBroadcast(Message{Type: "game_over", Content: "Game over", Payload: pay, Room: r.id})
@@ -263,7 +304,7 @@ func (r *Room) run() {
 					r.game.Players[msg.Username] = &PlayerState{Username: msg.Username, USD: r.initialUSD, Bribes: 0, Online: true}
 					r.game.PlayersOrder = append(r.game.PlayersOrder, msg.Username)
 				}
-				if !r.game.Active {
+				if !r.game.Active || r.negotiation {
 					for c := range r.clients {
 						if c.username == msg.Username {
 							c.send <- Message{Type: "error", Content: "no active round"}
@@ -278,11 +319,42 @@ func (r *Room) run() {
 					amt = r.game.Players[msg.Username].USD
 				}
 				r.game.Bets[msg.Username] = amt
+				// Send bet confirmation privately to the bettor (do not reveal amount to others)
 				conf, _ := json.Marshal(map[string]interface{}{"username": msg.Username, "amount": amt})
-				r.safeBroadcast(Message{Type: "bet_confirm", Content: fmt.Sprintf("%s bet %d", msg.Username, amt), Payload: conf, Room: r.id})
+				for c := range r.clients {
+					if c.username == msg.Username {
+						c.send <- Message{Type: "bet_confirm", Content: "your bet accepted", Payload: conf, Room: r.id}
+						break
+					}
+				}
+				// Broadcast a generic notification that someone placed a bet (no amounts)
+				r.safeBroadcast(Message{Type: "bet_placed", Content: fmt.Sprintf("%s has placed a bet", msg.Username), Room: r.id})
+				// If all active players (USD>0 and online) have placed bets, resolve the round
+				allPlaced := true
+				for uname, pstate := range r.game.Players {
+					if pstate.USD > 0 && pstate.Online {
+						if _, ok := r.game.Bets[uname]; !ok {
+							allPlaced = false
+							break
+						}
+					}
+				}
+				if allPlaced {
+					go r.resolveRound()
+				}
 				continue
 			case "start":
-				r.startRound()
+				if r.finished {
+					// cannot start when game finished
+					for c := range r.clients {
+						if c.username == msg.Username {
+							c.send <- Message{Type: "error", Content: "game finished; use /restart to play again"}
+							break
+						}
+					}
+				} else {
+					r.startRound()
+				}
 				continue
 			case "status":
 				if r.game == nil {
@@ -291,17 +363,41 @@ func (r *Room) run() {
 				state, _ := json.Marshal(r.game)
 				r.safeBroadcast(Message{Type: "status", Content: "game state", Payload: state, Room: r.id})
 				continue
+			case "restart":
+				// reset the room/game to initial state
+				if r.game == nil {
+					r.initializeGame()
+				}
+				// reset players USD and bribes, keep join order
+				for _, p := range r.game.Players {
+					p.USD = r.initialUSD
+					p.Bribes = 0
+					p.Online = true
+				}
+				r.game.Round = 0
+				r.game.Active = false
+				r.game.Bets = make(map[string]int)
+				r.finished = false
+				r.negotiation = false
+				// notify room
+				r.safeBroadcast(Message{Type: "room_restarted", Content: "Room has been restarted", Room: r.id})
+				continue
 			default:
 			}
-			// broadcast normal message to room clients
-			for c := range r.clients {
-				select {
-				case c.send <- msg:
-				default:
-					close(c.send)
-					delete(r.clients, c)
+			// If this is a chat message and we're in the betting phase (negotiation ended), disallow chat
+			if msg.Type == "message" && r.game != nil && r.game.Active && !r.negotiation {
+				// send an error back to the originator only
+				for c := range r.clients {
+					if c.username == msg.Username {
+						c.send <- Message{Type: "error", Content: "chat disabled during betting round"}
+						break
+					}
 				}
+				continue
 			}
+
+			// deliver message to room clients
+			r.safeBroadcast(msg)
 		}
 	}
 }
@@ -479,6 +575,51 @@ func (h *Hub) run() {
 				h.rooms[roomID].register <- cli
 				cli.send <- Message{Type: "room_joined", Content: roomID}
 				continue
+			case "users":
+				// Return a list of users (room-scoped if provided)
+				var p map[string]interface{}
+				if len(message.Payload) > 0 {
+					_ = json.Unmarshal(message.Payload, &p)
+				}
+				// find client
+				var cli *Client
+				for c := range h.clients {
+					if c.username == message.Username {
+						cli = c
+						break
+					}
+				}
+				if cli == nil {
+					continue
+				}
+				roomID := ""
+				if v, ok := p["room"].(string); ok && v != "" {
+					roomID = v
+				} else {
+					roomID = cli.room
+				}
+				// global list if no room
+				if roomID == "" {
+					names := []string{}
+					for c := range h.clients {
+						names = append(names, c.username)
+					}
+					b, _ := json.Marshal(names)
+					cli.send <- Message{Type: "users", Content: "users_list", Payload: b}
+					continue
+				}
+				r, ok := h.rooms[roomID]
+				if !ok {
+					cli.send <- Message{Type: "error", Content: fmt.Sprintf("room %s not found", roomID)}
+					continue
+				}
+				names := []string{}
+				for c := range r.clients {
+					names = append(names, c.username)
+				}
+				b, _ := json.Marshal(names)
+				cli.send <- Message{Type: "users", Content: "users_list", Payload: b}
+				continue
 			}
 			// If the message targets a room, forward it to that room's broadcast channel
 			if message.Room != "" {
@@ -492,7 +633,14 @@ func (h *Hub) run() {
 				}
 			}
 
-			// Global chat (not room-specific) - broadcast to all connected clients
+			// If this is a plain chat message without a target room, do not broadcast globally.
+			// Chat should be room-scoped only. Other non-message types are still broadcast globally.
+			if message.Type == "message" && message.Room == "" {
+				// ignore plain global chat messages (pre-room)
+				continue
+			}
+
+			// Global broadcast for non-chat messages (or others if needed)
 			for client := range h.clients {
 				select {
 				case client.send <- message:
