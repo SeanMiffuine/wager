@@ -24,6 +24,7 @@ type Message struct {
 
 func main() {
 	server := flag.String("server", "localhost:8080", "websocket server host:port")
+	scheme := flag.String("scheme", "ws", "websocket scheme: ws or wss")
 	username := flag.String("u", "guest", "username")
 	flag.Parse()
 
@@ -58,7 +59,7 @@ func main() {
 	root.AddItem(input, 3, 0, true)
 
 	// websocket connection
-	u := url.URL{Scheme: "ws", Host: *server, Path: "/ws", RawQuery: "username=" + url.QueryEscape(*username)}
+	u := url.URL{Scheme: *scheme, Host: *server, Path: "/ws", RawQuery: "username=" + url.QueryEscape(*username)}
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		log.Fatalf("failed to connect to %s: %v", u.String(), err)
