@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	mrand "math/rand"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -40,7 +42,7 @@ func newHub() *Hub {
 		broadcast:            make(chan Message),
 		register:             make(chan *Client),
 		unregister:           make(chan *Client),
-		roundDurationSeconds: 3,
+		roundDurationSeconds: 30,
 		initialUSD:           1000,
 		rooms:                make(map[string]*Room),
 	}
@@ -52,6 +54,7 @@ type PlayerState struct {
 	USD      int    `json:"usd"`
 	Bribes   int    `json:"bribes"`
 	Online   bool   `json:"online"`
+	Industry string `json:"industry"`
 }
 
 // Game represents the ongoing game state
@@ -76,31 +79,40 @@ type Message struct {
 
 // Room is a self-contained game room with its own clients and game
 type Room struct {
-	id                   string
-	clients              map[*Client]bool
-	register             chan *Client
-	unregister           chan *Client
-	broadcast            chan Message
-	game                 *Game
-	tick                 chan bool
-	negotiation          bool
-	finished             bool
-	roundDurationSeconds int
-	initialUSD           int
+	id                    string
+	clients               map[*Client]bool
+	register              chan *Client
+	unregister            chan *Client
+	broadcast             chan Message
+	game                  *Game
+	tick                  chan bool
+	negotiation           bool
+	finished              bool
+	autoAdvance           bool
+	roundDurationSeconds  int
+	initialUSD            int
+	interRoundSeconds     int
+	host                  string
+	currentSenatorName    string
+	currentSenatorCountry string
 }
 
 func newRoom(id string, roundSeconds, initial int) *Room {
 	return &Room{
-		id:                   id,
-		clients:              make(map[*Client]bool),
-		register:             make(chan *Client),
-		unregister:           make(chan *Client),
-		broadcast:            make(chan Message),
-		tick:                 make(chan bool, 1),
-		negotiation:          false,
-		finished:             false,
-		roundDurationSeconds: roundSeconds,
-		initialUSD:           initial,
+		id:                    id,
+		clients:               make(map[*Client]bool),
+		register:              make(chan *Client),
+		unregister:            make(chan *Client),
+		broadcast:             make(chan Message),
+		tick:                  make(chan bool, 1),
+		negotiation:           false,
+		finished:              false,
+		autoAdvance:           false,
+		roundDurationSeconds:  roundSeconds,
+		initialUSD:            initial,
+		interRoundSeconds:     7,
+		currentSenatorName:    "",
+		currentSenatorCountry: "",
 	}
 }
 
@@ -130,7 +142,7 @@ func (r *Room) initializeGame() {
 	r.game.PlayersOrder = []string{}
 
 	for client := range r.clients {
-		r.game.Players[client.username] = &PlayerState{Username: client.username, USD: r.initialUSD, Bribes: 0, Online: true}
+		r.game.Players[client.username] = &PlayerState{Username: client.username, USD: r.initialUSD, Bribes: 0, Online: true, Industry: randChoice(industries)}
 		r.game.PlayersOrder = append(r.game.PlayersOrder, client.username)
 	}
 }
@@ -152,8 +164,28 @@ func (r *Room) startRound() {
 	r.game.Bets = make(map[string]int)
 	// enter negotiation phase (chat allowed)
 	r.negotiation = true
-	payload, _ := json.Marshal(map[string]interface{}{"round": r.game.Round, "duration": r.roundDurationSeconds})
-	r.safeBroadcast(Message{Type: "round_start", Content: "Negotiation started", Payload: payload, Room: r.id})
+	// pick a silly senator for this round
+	r.currentSenatorName = fmt.Sprintf("%s %s", randChoice(senatorFirst), randChoice(senatorLast))
+	r.currentSenatorCountry = randChoice(countries)
+
+	// if this is the first round, give a short story preface
+	if r.game.Round == 1 {
+		preface := strings.Join([]string{
+			"==================================================",
+			"",
+			"WELCOME, CEOs of industry.",
+			"You each start with $1000. Each round you will bribe a senator to gain influence.",
+			"The player with the most bribes at the end becomes the Evil Corporate Supreme Leader.",
+			"Negotiate with your rivals, then place your bribes when betting starts.",
+			"",
+			"==================================================",
+		}, "\n")
+		r.safeBroadcast(Message{Type: "message", Content: preface, Room: r.id})
+	}
+
+	payload, _ := json.Marshal(map[string]interface{}{"round": r.game.Round, "duration": r.roundDurationSeconds, "senator": r.currentSenatorName, "country": r.currentSenatorCountry})
+	content := fmt.Sprintf("====\n\nROUND %d — Negotiation started\n\nYou are attempting to bribe %s from %s.\n\nDiscuss your strategy!\n\n====", r.game.Round, r.currentSenatorName, r.currentSenatorCountry)
+	r.safeBroadcast(Message{Type: "round_start", Content: content, Payload: payload, Room: r.id})
 	// start negotiation timer; when it expires, enter betting phase
 	go func() {
 		timer := time.NewTimer(time.Duration(r.roundDurationSeconds) * time.Second)
@@ -161,7 +193,7 @@ func (r *Room) startRound() {
 		r.negotiation = false
 		// notify room that betting phase has started
 		bp, _ := json.Marshal(map[string]interface{}{"round": r.game.Round})
-		r.safeBroadcast(Message{Type: "betting_start", Content: "Betting started", Payload: bp, Room: r.id})
+		r.safeBroadcast(Message{Type: "betting_start", Content: "Betting started\n\nPlace your bets now!", Payload: bp, Room: r.id})
 	}()
 }
 
@@ -211,21 +243,81 @@ func (r *Room) resolveRound() {
 		if last != "" {
 			if pl, ok := r.game.Players[last]; ok {
 				pl.Bribes++
-				// announce winner publicly with a fun message
-				winnerMsg := fmt.Sprintf("%s has won :) with %d bribes", pl.Username, pl.Bribes)
+				// announce winner publicly with a fun message (with spacing)
+				winnerMsg := fmt.Sprintf("\n\n%s has won :) with %d bribes\n\n", pl.Username, pl.Bribes)
 				r.safeBroadcast(Message{Type: "game_winner", Content: winnerMsg, Room: r.id})
 			}
 		}
+	}
+
+	// Build a detailed winners payload (username, amount they bet, current bribes)
+	winnersInfo := []map[string]interface{}{}
+	for _, w := range winners {
+		betAmt := 0
+		if b, ok := r.game.Bets[w]; ok {
+			betAmt = b
+		}
+		br := 0
+		if p, ok := r.game.Players[w]; ok {
+			br = p.Bribes
+		}
+		winnersInfo = append(winnersInfo, map[string]interface{}{"username": w, "amount": betAmt, "bribes": br})
+	}
+
+	// Friendly, multi-line summary content for chat with clearer spacing
+	var content string
+	if len(winnersInfo) == 0 {
+		content = fmt.Sprintf("\n\nROUND %d RESULT\n\nNo bets were placed this round.\n\n", r.game.Round)
+	} else if len(winnersInfo) == 1 {
+		wi := winnersInfo[0]
+		uname := fmt.Sprintf("%v", wi["username"])
+		amt := wi["amount"]
+		br := wi["bribes"]
+		// structured multi-line winner info
+		content = fmt.Sprintf("\n\nROUND %d RESULT\n\n%s\nbribed $%v\ntotal bribes: %v\n\n", r.game.Round, uname, amt, br)
+		// add a silly flourish referencing the senator on its own paragraph
+		content = fmt.Sprintf("%s%s won round %d by taking %s out for a lavish dinner (and a whisper or two).\n\n", content, uname, r.game.Round, r.currentSenatorName)
+	} else {
+		// multiple winners: list each on its own block
+		bparts := []string{}
+		for _, wi := range winnersInfo {
+			uname := fmt.Sprintf("%v", wi["username"])
+			amt := wi["amount"]
+			br := wi["bribes"]
+			block := fmt.Sprintf("%s\nbribed $%v\ntotal bribes: %v\n", uname, amt, br)
+			bparts = append(bparts, block)
+		}
+		content = fmt.Sprintf("\n\nROUND %d RESULT\n\n%s\n", r.game.Round, strings.Join(bparts, "\n"))
+		content = fmt.Sprintf("%sThey charmed %s from %s with an unforgettable night out.\n\n", content, r.currentSenatorName, r.currentSenatorCountry)
+	}
+
+	// Announce winners publicly with amounts and updated bribe counts
+	res := map[string]interface{}{"round": r.game.Round, "winners": winnersInfo}
+	payload, _ := json.Marshal(res)
+	r.safeBroadcast(Message{Type: "round_result", Content: content, Payload: payload, Room: r.id})
+
+	// Add a clear separator so clients see a distinct break between the result
+	// and the next round's start (helps readability in UIs/terminals).
+	r.safeBroadcast(Message{Type: "message", Content: "\n\n======\n\n", Room: r.id})
+
+	// If the room was marked finished above, broadcast final game over payload
+	if r.finished {
+		final := map[string]interface{}{"players": r.game.Players}
+		pay, _ := json.Marshal(final)
+		r.safeBroadcast(Message{Type: "game_over", Content: "\n\nGAME OVER\n\n", Payload: pay, Room: r.id})
 	}
 
 	// clear bets and mark round inactive
 	r.game.Bets = make(map[string]int)
 	r.game.Active = false
 
-	// Announce winners publicly without revealing bet amounts
-	res := map[string]interface{}{"round": r.game.Round, "winners": winners}
-	payload, _ := json.Marshal(res)
-	r.safeBroadcast(Message{Type: "round_result", Content: "Round resolved", Payload: payload, Room: r.id})
+	// If the game is not finished and autoAdvance is enabled, start next round after a short buffer
+	if !r.finished && r.autoAdvance {
+		go func() {
+			time.Sleep(time.Duration(r.interRoundSeconds) * time.Second)
+			r.startRound()
+		}()
+	}
 
 	// If the room was marked finished above, broadcast final game over payload
 	if r.finished {
@@ -244,7 +336,7 @@ func (r *Room) run() {
 				r.initializeGame()
 			}
 			if _, ok := r.game.Players[client.username]; !ok {
-				r.game.Players[client.username] = &PlayerState{Username: client.username, USD: r.initialUSD, Bribes: 0, Online: true}
+				r.game.Players[client.username] = &PlayerState{Username: client.username, USD: r.initialUSD, Bribes: 0, Online: true, Industry: randChoice(industries)}
 				r.game.PlayersOrder = append(r.game.PlayersOrder, client.username)
 			} else {
 				r.game.Players[client.username].Online = true
@@ -352,8 +444,22 @@ func (r *Room) run() {
 							break
 						}
 					}
-				} else {
+					continue
+				}
+				// Only allow explicit /start if the game hasn't begun yet. After the first start,
+				// rounds advance automatically (autoAdvance true).
+				if r.game == nil || r.game.Round == 0 {
 					r.startRound()
+					// enable automatic advancement of rounds
+					r.autoAdvance = true
+				} else {
+					// game already started; inform originator that rounds auto-advance
+					for c := range r.clients {
+						if c.username == msg.Username {
+							c.send <- Message{Type: "error", Content: "game already started; rounds advance automatically"}
+							break
+						}
+					}
 				}
 				continue
 			case "status":
@@ -381,6 +487,9 @@ func (r *Room) run() {
 				r.negotiation = false
 				// notify room
 				r.safeBroadcast(Message{Type: "room_restarted", Content: "Room has been restarted", Room: r.id})
+				// also push a status update so clients (UIs) refresh their player tabs/lists
+				state, _ := json.Marshal(r.game)
+				r.safeBroadcast(Message{Type: "status", Content: "game state", Payload: state, Room: r.id})
 				continue
 			default:
 			}
@@ -415,6 +524,40 @@ func generateRoomCode(n int) (string, error) {
 		out[i] = alphabet[r.Int64()]
 	}
 	return string(out), nil
+}
+
+// Story data for industries and senators
+var industries = []string{
+	"English Textbooks", "Plastic Cups", "Luxury Toothpicks", "Synthetic Wool", "Streaming Ads", "Nanotech Balloons", "Quantum Toasters", "Corporate Espionage LLC", "Pasta Futures", "Disposable Drones",
+	"Organic Ketchup", "Adult Coloring Books", "Foldable Sofas", "Biodegradable Glitter", "Electric Scooters", "AI-Powered Toasters", "Space Tourism Insurance", "Canned Sunshine", "Modular Umbrellas", "Scented USBs",
+	"Cold Brew Tea Co.", "Augmented Reality Stickers", "Luxury Paperclips", "Waterproof Notebooks", "Pet Rocks Reimagined", "Solar-Powered Lampshades", "Hovering Planters", "Retro Polaroid Filters", "Miniature Wind Turbines", "Designer Bandages",
+}
+
+var senatorFirst = []string{
+	"Bobby", "Sally", "Mortimer", "Trudy", "Hank", "Olive", "Baron", "Felicity", "Rex", "Gertie",
+	"Percival", "Zelda", "Clarence", "Ingrid", "Maurice", "Daphne", "Lionel", "Prudence", "Quentin", "Margo",
+	"Silas", "Lucinda", "Neville", "Beatrice", "Otis", "Wilhelmina", "Casper", "Marigold", "Tobias", "Eudora",
+}
+
+var senatorLast = []string{
+	"Smith", "O'Leary", "Zamboni", "Quincy", "Mcdowell", "Nakamoto", "VonBleu", "Smirk", "Bumble", "Hargrove",
+	"Featherstone", "Blackwell", "Kingman", "Alder", "Hooten", "Bramble", "Nightshade", "Clearwater", "Pine", "Silverton",
+	"Crowley", "Fairbanks", "Thornberry", "Galloway", "Pembroke", "Wainscott", "Redford", "Thistle", "Longbottom", "Huxley",
+}
+
+var countries = []string{
+	"Zimbabwe", "Norway", "Tonga", "Botswana", "France", "Narnia", "Poland", "Peru", "United States", "Atlantis",
+	"Wakanda", "Mongolia", "Iceland", "Chile", "Madagascar", "Luxembourg", "Brazil", "Canada", "Japan", "Samoa",
+	"Seychelles", "Romania", "Czechia", "Germany", "Australia", "India", "Mexico", "Egypt", "Portugal", "Bahrain",
+}
+
+var rng = mrand.New(mrand.NewSource(time.Now().UnixNano()))
+
+func randChoice(arr []string) string {
+	if len(arr) == 0 {
+		return ""
+	}
+	return arr[rng.Intn(len(arr))]
 }
 
 // Note: game lifecycle moved into Room; hub-level helpers removed.
@@ -464,6 +607,7 @@ func (h *Hub) run() {
 			if _, ok := h.rooms[roomID]; !ok {
 				if client.isHost {
 					r := newRoom(roomID, h.roundDurationSeconds, h.initialUSD)
+					r.host = client.username
 					h.rooms[roomID] = r
 					go r.run()
 				} else {
@@ -539,6 +683,7 @@ func (h *Hub) run() {
 				}
 				if _, ok := h.rooms[roomID]; !ok {
 					r := newRoom(roomID, h.roundDurationSeconds, h.initialUSD)
+					r.host = cli.username
 					h.rooms[roomID] = r
 					go r.run()
 				}
