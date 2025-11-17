@@ -2,9 +2,8 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
-
-	// "encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -65,9 +64,18 @@ func (c *Client) readPump(hub *Hub) {
 			break
 		}
 
-		// Set the username from the client
+		// Debug: log the raw message received from client
+		payloadStr := ""
+		if len(msg.Payload) > 0 {
+			payloadStr = string(msg.Payload)
+		}
+		log.Printf("readPump recv: type=%s user_payload=%s content=%s room=%s\n", msg.Type, payloadStr, msg.Content, msg.Room)
+
+		// Preserve message type if client provided it; otherwise default to "message"
 		msg.Username = c.username
-		msg.Type = "message"
+		if msg.Type == "" {
+			msg.Type = "message"
+		}
 
 		hub.broadcast <- msg
 	}
@@ -163,7 +171,7 @@ func main() {
 	defer conn.Close()
 
 	fmt.Println("Connected! Type messages and press Enter to send.")
-	fmt.Println("Type 'quit' to exit, '/users' to see online users.")
+	fmt.Println("Type 'quit' to exit. Commands: /create [CODE], /join CODE, /start, /bet AMOUNT, /status, /users, /help")
 	fmt.Println("========================================")
 
 	// Channel to handle interrupt signal
@@ -174,6 +182,7 @@ func main() {
 	sendChan := make(chan string)
 
 	// Goroutine to handle incoming messages
+	currentRoom := ""
 	go func() {
 		for {
 			var msg Message
@@ -183,8 +192,13 @@ func main() {
 				return
 			}
 
-			// Format and display the message based on type
-			timestamp := time.Now().Format("15:04:05")
+			// Format and display the message based on type. Prefer server-provided timestamp when present.
+			timestamp := ""
+			if msg.Timestamp != "" {
+				timestamp = msg.Timestamp
+			} else {
+				timestamp = time.Now().Format("15:04:05")
+			}
 			switch msg.Type {
 			case "message":
 				fmt.Printf("[%s] %s: %s\n", timestamp, msg.Username, msg.Content)
@@ -192,6 +206,64 @@ func main() {
 				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
 			case "leave":
 				fmt.Printf("[%s] *** %s ***\n", timestamp, msg.Content)
+			case "room_created":
+				// server informs client of created room
+				fmt.Printf("[%s] Room created: %s\n", timestamp, msg.Content)
+				currentRoom = msg.Content
+			case "room_joined":
+				fmt.Printf("[%s] Joined room: %s\n", timestamp, msg.Content)
+				currentRoom = msg.Content
+			case "bet_confirm":
+				fmt.Printf("[%s] %s\n", timestamp, msg.Content)
+			case "round_start":
+				fmt.Printf("[%s] ROUND START: %s\n", timestamp, msg.Content)
+				if len(msg.Payload) > 0 {
+					var p map[string]interface{}
+					_ = json.Unmarshal(msg.Payload, &p)
+					if r, ok := p["round"]; ok {
+						fmt.Printf("    round: %v\n", r)
+					}
+				}
+			case "round_result":
+				fmt.Printf("[%s] ROUND RESULT: %s\n", timestamp, msg.Content)
+				if len(msg.Payload) > 0 {
+					var p map[string]interface{}
+					_ = json.Unmarshal(msg.Payload, &p)
+					b, _ := json.MarshalIndent(p, "    ", "  ")
+					fmt.Println(string(b))
+				}
+			case "status":
+				fmt.Printf("[%s] STATUS: %s\n", timestamp, msg.Content)
+				if len(msg.Payload) > 0 {
+					var p map[string]interface{}
+					_ = json.Unmarshal(msg.Payload, &p)
+					b, _ := json.MarshalIndent(p, "    ", "  ")
+					fmt.Println(string(b))
+				}
+			case "game_over":
+				fmt.Printf("[%s] GAME OVER: %s\n", timestamp, msg.Content)
+				if len(msg.Payload) > 0 {
+					var p map[string]interface{}
+					_ = json.Unmarshal(msg.Payload, &p)
+					b, _ := json.MarshalIndent(p, "    ", "  ")
+					fmt.Println(string(b))
+				}
+			case "error":
+				fmt.Printf("[%s] ERROR: %s\n", timestamp, msg.Content)
+			case "name_assigned":
+				fmt.Printf("[%s] Name assigned: %s\n", timestamp, msg.Content)
+			case "users":
+				// payload expected to be a JSON array
+				if len(msg.Payload) > 0 {
+					var arr []string
+					_ = json.Unmarshal(msg.Payload, &arr)
+					fmt.Printf("[%s] Users: %v\n", timestamp, arr)
+				} else {
+					fmt.Printf("[%s] Users: %s\n", timestamp, msg.Content)
+				}
+			default:
+				// unknown type - print raw
+				fmt.Printf("[%s] %s: %s (type=%s)\n", timestamp, msg.Username, msg.Content, msg.Type)
 			}
 		}
 	}()
@@ -217,15 +289,84 @@ func main() {
 		case message := <-sendChan:
 			// Handle special commands
 			if strings.HasPrefix(message, "/") {
-				switch message {
+				parts := strings.Fields(message)
+				cmd := parts[0]
+				switch cmd {
+				case "/create":
+					// optional code
+					payload := map[string]string{}
+					if len(parts) > 1 {
+						payload["room"] = parts[1]
+					}
+					b, _ := json.Marshal(payload)
+					msg := Message{Username: username, Type: "create_room", Payload: b}
+					_ = conn.WriteJSON(msg)
+					continue
+				case "/join":
+					if len(parts) < 2 {
+						fmt.Println("Usage: /join CODE")
+						continue
+					}
+					payload := map[string]string{"room": parts[1]}
+					b, _ := json.Marshal(payload)
+					msg := Message{Username: username, Type: "join_room", Payload: b}
+					_ = conn.WriteJSON(msg)
+					continue
+				case "/start":
+					if currentRoom == "" {
+						fmt.Println("You are not in a room. Join or create one first.")
+						continue
+					}
+					msg := Message{Username: username, Type: "start", Room: currentRoom}
+					_ = conn.WriteJSON(msg)
+					continue
+				case "/bet":
+					if currentRoom == "" {
+						fmt.Println("You are not in a room. Join or create one first.")
+						continue
+					}
+					if len(parts) < 2 {
+						fmt.Println("Usage: /bet AMOUNT")
+						continue
+					}
+					amt := 0
+					fmt.Sscanf(parts[1], "%d", &amt)
+					payload := map[string]int{"amount": amt}
+					b, _ := json.Marshal(payload)
+					msg := Message{Username: username, Type: "bet", Room: currentRoom, Payload: b}
+					_ = conn.WriteJSON(msg)
+					continue
+				case "/status":
+					if currentRoom == "" {
+						fmt.Println("You are not in a room. Join or create one first.")
+						continue
+					}
+					msg := Message{Username: username, Type: "status", Room: currentRoom}
+					_ = conn.WriteJSON(msg)
+					continue
+				case "/restart":
+					if currentRoom == "" {
+						fmt.Println("You are not in a room. Join or create one first.")
+						continue
+					}
+					msg := Message{Username: username, Type: "restart", Room: currentRoom}
+					_ = conn.WriteJSON(msg)
+					continue
 				case "/users":
-					fmt.Println("*** Command not implemented yet ***")
+					// request users in current room (or global if not in room)
+					payload := map[string]string{}
+					if currentRoom != "" {
+						payload["room"] = currentRoom
+					}
+					b, _ := json.Marshal(payload)
+					msg := Message{Username: username, Type: "users", Payload: b}
+					_ = conn.WriteJSON(msg)
 					continue
 				case "/help":
-					fmt.Println("*** Available commands: /users, /help, quit ***")
+					fmt.Println("Available commands: /create [CODE], /join CODE, /start, /bet AMOUNT, /status, /users, /help, quit")
 					continue
 				default:
-					fmt.Println("*** Unknown command. Type /help for available commands ***")
+					fmt.Println("Unknown command. Type /help for available commands")
 					continue
 				}
 			}
@@ -234,6 +375,7 @@ func main() {
 				Username: username,
 				Content:  message,
 				Type:     "message",
+				Room:     currentRoom,
 			}
 
 			err := conn.WriteJSON(msg)
